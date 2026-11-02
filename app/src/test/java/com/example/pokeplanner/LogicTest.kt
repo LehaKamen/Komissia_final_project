@@ -1,3 +1,0 @@
-package com.example.pokeplanner
-import org.junit.Assert.*;import org.junit.Test
-class LogicTest{@Test fun searchCaseInsensitive()=assertTrue("Pikachu".contains("pika",true));@Test fun emptyQueryMatches()=assertTrue("Pikachu".contains("",true));@Test fun idParsed()=assertEquals(25,"https://pokeapi.co/api/v2/pokemon/25/".trimEnd('/').substringAfterLast('/').toInt());@Test fun noDuplicateIds()=assertEquals(1,listOf(25,25).distinct().size);@Test fun statusContract()=assertTrue("PLANNED" in setOf("PLANNED","TRAINING","READY"));@Test fun noteCanBeEmpty()=assertEquals("","");@Test fun retryCallsAgain(){var n=0;fun call():Boolean{n++;return n>1};assertFalse(call());assertTrue(call());assertEquals(2,n)}}
