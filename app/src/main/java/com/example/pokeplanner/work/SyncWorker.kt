@@ -6,6 +6,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.example.pokeplanner.data.Repository
 import com.example.pokeplanner.data.SettingsSource
+import com.example.pokeplanner.data.isRetryableSyncError
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.CancellationException
@@ -24,6 +25,14 @@ class SyncWorker @AssistedInject constructor(
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (error: Exception) {
-        Result.retry()
+        if (isRetryableSyncError(error) && runAttemptCount < MAX_ATTEMPTS - 1) {
+            Result.retry()
+        } else {
+            Result.failure()
+        }
+    }
+
+    companion object {
+        const val MAX_ATTEMPTS = 3
     }
 }

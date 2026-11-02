@@ -17,6 +17,98 @@ import java.io.IOException
 
 class RepositoryTest {
     @Test
+    fun completedDownloadsAreNotRepeatedIfFinalTimestampWriteWasInterrupted() = runTest {
+        val fixture = RepositoryFixture()
+        coEvery { fixture.dao.finishSync(any()) } throws IOException("interrupted")
+        try {
+            fixture.repository.refreshIfNeeded(12)
+            fail("Expected finalization error")
+        } catch (_: IOException) { }
+        assertEquals(60, fixture.cards.value.size)
+        assertTrue(fixture.pending.isEmpty())
+        assertTrue(fixture.batchActive)
+        assertNull(fixture.stamp)
+        coEvery { fixture.dao.finishSync(any()) } answers {
+            fixture.stamp = firstArg()
+            fixture.batchActive = false
+        }
+        fixture.api.requestedIds.clear()
+        val restarted = com.example.pokeplanner.data.Repository(
+            fixture.api,
+            fixture.dao,
+            fixture.images,
+            com.example.pokeplanner.data.Clock { fixture.now },
+        )
+        restarted.refreshIfNeeded(12)
+        assertTrue(fixture.api.requestedIds.isEmpty())
+        assertEquals(1, fixture.api.listCalls)
+        assertFalse(restarted.shouldRefresh(12))
+    }
+
+    @Test
+    fun mixedErrorsRetryOnlyFailuresAndStopWhenOnlyPermanentErrorRemains() = runTest {
+        val fixture = RepositoryFixture()
+        fixture.images.permanentIds += 25
+        fixture.api.failedIds += 26
+        try {
+            fixture.repository.refreshIfNeeded(12)
+            fail("Expected partial error")
+        } catch (error: IncompleteSyncException) {
+            assertEquals(2, error.failedCount)
+            assertTrue(error.retryable)
+        }
+        fixture.api.failedIds.clear()
+        fixture.api.requestedIds.clear()
+        try {
+            fixture.repository.refreshIfNeeded(12)
+            fail("Expected permanent error")
+        } catch (error: IncompleteSyncException) {
+            assertEquals(1, error.failedCount)
+            assertFalse(error.retryable)
+        }
+        assertEquals(listOf(25, 26), fixture.api.requestedIds.sorted())
+        assertEquals(listOf(25), fixture.pending.sorted())
+        assertNull(fixture.stamp)
+    }
+
+    @Test
+    fun retryAfterRepositoryRecreationDownloadsOnlyTheFailedCard() = runTest {
+        val fixture = RepositoryFixture()
+        fixture.repository.refreshIfNeeded(12)
+        fixture.api.failedIds += 25
+        try {
+            fixture.repository.refreshIfNeeded(12, force = true)
+            fail("Expected partial error")
+        } catch (_: IncompleteSyncException) { }
+        fixture.api.failedIds.clear()
+        fixture.api.requestedIds.clear()
+        val restarted = com.example.pokeplanner.data.Repository(
+            fixture.api,
+            fixture.dao,
+            fixture.images,
+            com.example.pokeplanner.data.Clock { fixture.now },
+        )
+        restarted.refreshIfNeeded(12)
+        assertEquals(listOf(25), fixture.api.requestedIds)
+        assertFalse(restarted.shouldRefresh(12))
+        assertTrue(fixture.pending.isEmpty())
+    }
+
+    @Test
+    fun cachedTextViewIsRecordedEvenWhenItsMissingImageCannotLoad() = runTest {
+        val fixture = RepositoryFixture()
+        fixture.cards.value = listOf(PokemonEntity(25, "Pikachu", "https://image", "electric", 1))
+        fixture.images.failedIds += 25
+        try {
+            fixture.repository.openPokemon(25)
+            fail("Expected image error for retry UI")
+        } catch (_: IOException) { }
+        assertEquals(25, fixture.recent.value.single().pokemonId)
+        assertEquals("Pikachu", fixture.cards.value.single().name)
+        assertTrue(fixture.api.requestedIds.isEmpty())
+    }
+
+    @Test
     fun openingCachedCardDoesNotOverwriteConcurrentRefresh() = runTest {
         val fixture = RepositoryFixture()
         val old = PokemonEntity(25, "Pikachu", "https://image", "old", 1, "/images/25.png")
@@ -97,7 +189,10 @@ class RepositoryTest {
         assertEquals(10, fixture.cards.value.size)
         assertTrue(fixture.repository.shouldRefresh(12))
         fixture.api.failedIds.clear()
+        fixture.api.requestedIds.clear()
         fixture.repository.refreshIfNeeded(12)
+        assertEquals((11..60).toList(), fixture.api.requestedIds.sorted())
+        assertEquals(1, fixture.api.listCalls)
         assertEquals(60, fixture.cards.value.size)
         assertFalse(fixture.repository.shouldRefresh(12))
     }

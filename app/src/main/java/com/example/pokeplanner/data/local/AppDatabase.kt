@@ -13,8 +13,9 @@ import androidx.room.TypeConverters
         CollectionMemberEntity::class,
         CatalogIndexEntity::class,
         SyncMetadata::class,
+        PendingSyncEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 @TypeConverters(StatusConverters::class)

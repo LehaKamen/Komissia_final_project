@@ -24,7 +24,7 @@ import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 
-class IncompleteSyncException(val failedCount: Int, val totalCount: Int) :
+class IncompleteSyncException(val failedCount: Int, val totalCount: Int, val retryable: Boolean = true) :
     IOException(
         "Не удалось загрузить $failedCount из $totalCount карточек. Обновление не завершено; повторите попытку.",
     )
@@ -70,36 +70,44 @@ class Repository @Inject constructor(
     }
 
     private suspend fun refreshLocked() = coroutineScope {
+        val ids = if (dao.hasPendingSync()) {
+            dao.pendingSyncIds()
+        } else {
+            beginRefresh()
+        }
+        val results = ids.map { id ->
+            async {
+                try {
+                    dao.saveSyncedPokemon(downloadDetail(id))
+                    Result.success(Unit)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    Result.failure<Unit>(error)
+                }
+            }
+        }.awaitAll()
+        val errors = results.mapNotNull { it.exceptionOrNull() }
+        if (errors.isNotEmpty()) {
+            throw IncompleteSyncException(errors.size, ids.size, errors.any(::isRetryableSyncError))
+        }
+        dao.finishSync(clock.now())
+    }
+
+    private suspend fun beginRefresh(): List<Int> {
         val index = api.list().results.map { item ->
             val id = item.url.trimEnd('/').substringAfterLast('/').toIntOrNull()
-                ?: throw IOException("Сервер вернул некорректный идентификатор покемона")
+                ?: throw PermanentSyncException("Сервер вернул некорректный идентификатор покемона")
             CatalogIndexEntity(id, item.name.replaceFirstChar(Char::uppercase))
         }.distinctBy { it.id }.sortedBy { it.id }
-        if (index.isEmpty()) throw IOException("Сервер вернул пустой каталог")
+        if (index.isEmpty()) throw PermanentSyncException("Сервер вернул пустой каталог")
         dao.putIndex(index)
 
         // Preload the first page; also refresh every previously saved card.
         val savedIds = pokemon.first().map { it.id }
         val ids = (index.take(60).map { it.id } + savedIds).distinct()
-        val results = ids.map { id ->
-            async {
-                try {
-                    Result.success(downloadDetail(id))
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (error: Exception) {
-                    Result.failure<PokemonEntity>(error)
-                }
-            }
-        }.awaitAll()
-        val successes = results.mapNotNull { it.getOrNull() }
-        if (successes.size != ids.size) {
-            // Keep useful data, but never mark a partial batch as fresh.
-            dao.invalidateSync()
-            dao.putPokemon(successes)
-            throw IncompleteSyncException(ids.size - successes.size, ids.size)
-        }
-        dao.completeSync(successes, clock.now())
+        dao.beginSync(ids)
+        return ids
     }
 
     private suspend fun downloadDetail(id: Int): PokemonEntity = requests.withPermit {
@@ -123,11 +131,13 @@ class Repository @Inject constructor(
         val cached = dao.cachedPokemon(id)
         if (cached == null) {
             dao.insertPokemonIfAbsent(downloadDetail(id))
-        } else if (!images.exists(cached.localImage)) {
+        }
+        // A saved text card can be viewed even if its image cannot be restored offline.
+        dao.putRecent(RecentEntity(id, clock.now()))
+        if (cached != null && !images.exists(cached.localImage)) {
             val path = images.save(id, cached.image)
             dao.updateLocalImage(id, path)
         }
-        dao.putRecent(RecentEntity(id, clock.now()))
     }
 
     suspend fun save(id: Int, status: PokemonStatus, note: String) = dao.putPersonal(PersonalEntity(id, status, note))

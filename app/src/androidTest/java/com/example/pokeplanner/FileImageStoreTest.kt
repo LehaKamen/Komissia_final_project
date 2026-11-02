@@ -21,6 +21,30 @@ import java.io.IOException
 
 class FileImageStoreTest {
     @Test
+    fun image404IsPermanentBut503CanBeRetried() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val file = File(context.filesDir, "pokemon-images/999994.png")
+        file.delete()
+        try {
+            for (code in listOf(404, 503)) {
+                val client = OkHttpClient.Builder().addInterceptor { chain ->
+                    Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                        .code(code).message("Error").body("error".toResponseBody()).build()
+                }.build()
+                try {
+                    FileImageStore(context, client).save(999994, "https://example.invalid/image.png")
+                    fail("HTTP error must fail")
+                } catch (error: IOException) {
+                    assertEquals(code == 503, com.example.pokeplanner.data.isRetryableSyncError(error))
+                    assertFalse(file.exists())
+                }
+            }
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
     fun absentApiSpriteCreatesLocalPlaceholderWithoutNetwork() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val file = File(context.filesDir, "pokemon-images/999993.png")

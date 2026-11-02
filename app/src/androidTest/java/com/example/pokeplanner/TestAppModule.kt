@@ -31,6 +31,10 @@ import javax.inject.Singleton
 
 class TestApi : PokeApi {
     @Volatile var offline = false
+
+    @Volatile var permanentDetailFailure = false
+
+    @Volatile var failedId: Int? = null
     val listCalls = AtomicInteger()
     val detailCalls = AtomicInteger()
 
@@ -42,6 +46,10 @@ class TestApi : PokeApi {
 
     override suspend fun detail(id: Int): DetailDto {
         detailCalls.incrementAndGet()
+        if (permanentDetailFailure && id == 25) {
+            throw com.example.pokeplanner.data.PermanentSyncException("Image HTTP 404")
+        }
+        if (id == failedId) throw IOException("temporary failure")
         if (offline) throw IOException("offline")
         return DetailDto(id, name(id), Sprites("https://images/$id.png"), emptyList())
     }

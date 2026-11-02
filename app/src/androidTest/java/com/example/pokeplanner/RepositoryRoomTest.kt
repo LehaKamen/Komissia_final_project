@@ -38,6 +38,67 @@ class RepositoryRoomTest {
     }
 
     @Test
+    fun completedBatchIsFinalizedAfterReopenWithoutAnyNetworkRequests() = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val name = "finished-sync-test.db"
+        context.deleteDatabase(name)
+        var db = androidx.room.Room.databaseBuilder(context, AppDatabase::class.java, name).build()
+        try {
+            db.dao().beginSync(listOf(25))
+            db.dao().saveSyncedPokemon(
+                com.example.pokeplanner.data.local.PokemonEntity(25, "Pikachu", "", "electric", 1),
+            )
+            assertTrue(db.dao().hasPendingSync())
+            assertTrue(db.dao().pendingSyncIds().isEmpty())
+            db.close()
+            db = androidx.room.Room.databaseBuilder(context, AppDatabase::class.java, name).build()
+            api.offline = true
+            val images = TestImages(File(context.cacheDir, "finished-sync-images"))
+            val clock = com.example.pokeplanner.data.Clock { 2000L }
+            Repository(api, db.dao(), images, clock).refreshIfNeeded(12)
+            assertEquals(0, api.listCalls.get())
+            assertEquals(0, api.detailCalls.get())
+            assertEquals(2000L, db.dao().lastCompleteSync())
+            assertTrue(!db.dao().hasPendingSync())
+        } finally {
+            db.close()
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test
+    fun pendingBatchSurvivesDatabaseCloseAndRetriesOnlyMissingCard() = runBlocking {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val name = "pending-sync-test.db"
+        context.deleteDatabase(name)
+        val images = TestImages(File(context.cacheDir, "pending-sync-images"))
+        val clock = com.example.pokeplanner.data.Clock { 1000L }
+        var db = androidx.room.Room.databaseBuilder(context, AppDatabase::class.java, name).build()
+        try {
+            api.failedId = 25
+            try {
+                Repository(api, db.dao(), images, clock).refreshIfNeeded(12)
+                fail("Expected partial failure")
+            } catch (_: com.example.pokeplanner.data.IncompleteSyncException) { }
+            assertEquals(listOf(25), db.dao().pendingSyncIds())
+            assertEquals(59, db.dao().pokemon().first().size)
+            db.close()
+            db = androidx.room.Room.databaseBuilder(context, AppDatabase::class.java, name).build()
+            api.failedId = null
+            val calls = api.detailCalls.get()
+            Repository(api, db.dao(), images, clock).refreshIfNeeded(12)
+            assertEquals(1, api.detailCalls.get() - calls)
+            assertEquals(1, api.listCalls.get())
+            assertEquals(60, db.dao().pokemon().first().size)
+            assertTrue(db.dao().pendingSyncIds().isEmpty())
+            assertNotNull(db.dao().lastCompleteSync())
+        } finally {
+            db.close()
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test
     fun collectionsPersistMembershipAndCascadeOnlyTheirOwnLinks() = runBlocking {
         repository.openPokemon(25)
         repository.save(25, PokemonStatus.TRAINING, "Заметка")

@@ -2,6 +2,7 @@ package com.example.pokeplanner.work
 
 import com.example.pokeplanner.data.Repository
 import com.example.pokeplanner.data.SettingsSource
+import com.example.pokeplanner.data.isRetryableSyncError
 import com.example.pokeplanner.data.userMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -38,11 +39,14 @@ class SyncController @Inject constructor(
     private val requests = MutableSharedFlow<Boolean>(replay = 1)
     private val mutableState = MutableStateFlow(SyncState())
     private var foregroundJob: Job? = null
+    private var automaticRefreshBlocked = false
     val state = mutableState.asStateFlow()
 
     init {
         scope.launch {
             requests.collect { force ->
+                if (!force && automaticRefreshBlocked) return@collect
+                if (force) automaticRefreshBlocked = false
                 mutableState.value = SyncState(loading = true)
                 try {
                     repository.refreshIfNeeded(settings.flow.first().refreshHours, force)
@@ -50,6 +54,7 @@ class SyncController @Inject constructor(
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
+                    automaticRefreshBlocked = !isRetryableSyncError(error)
                     mutableState.value = SyncState(error = userMessage(error))
                 }
             }

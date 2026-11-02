@@ -24,6 +24,49 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class MainVmTest {
     @Test
+    fun permanentErrorStopsAutomaticForegroundRequestsUntilManualRetry() = withControllerTest {
+        val fixture = RepositoryFixture()
+        fixture.api.listFailure = com.example.pokeplanner.data.PermanentSyncException("HTTP 404")
+        val settings = FakeSettings()
+        val sync = controller(fixture, settings)
+        val vm = MainVm(SavedStateHandle(), fixture.repository, settings, sync)
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect { } }
+        sync.setForeground(true)
+        advanceTimeBy(121_000)
+        runCurrent()
+        assertEquals(1, fixture.api.listCalls)
+        assertTrue(vm.state.value.error != null)
+        fixture.api.listFailure = null
+        vm.retry()
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(2, fixture.api.listCalls)
+        assertNull(vm.state.value.error)
+        assertEquals(151, vm.state.value.items.size)
+    }
+
+    @Test
+    fun numericSearchAcceptsLeadingZerosAndHashWithoutChangingNameSearch() = withControllerTest {
+        val fixture = RepositoryFixture()
+        fixture.index.value = listOf(CatalogIndexEntity(25, "Pikachu"), CatalogIndexEntity(150, "Mewtwo"))
+        val settings = FakeSettings()
+        val vm = MainVm(SavedStateHandle(), fixture.repository, settings, controller(fixture, settings))
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect { } }
+        for (query in listOf("25", "025", "#25", " #0025 ", "PIKA")) {
+            vm.search(query)
+            advanceTimeBy(351)
+            runCurrent()
+            assertEquals(query, listOf(25), vm.state.value.items.map { it.id })
+        }
+        for (query in listOf("#", "-25", "#999999999999999999999", "#25x")) {
+            vm.search(query)
+            advanceTimeBy(351)
+            runCurrent()
+            assertTrue(query, vm.state.value.items.isEmpty())
+        }
+    }
+
+    @Test
     fun unmatchedQueryProducesEmptyScreenWithoutErrorOrLoading() = withControllerTest {
         val fixture = RepositoryFixture()
         fixture.index.value = listOf(CatalogIndexEntity(25, "Pikachu"))

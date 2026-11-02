@@ -47,10 +47,37 @@ interface PokeDao {
     @Query("DELETE FROM sync_metadata")
     suspend fun invalidateSync()
 
+    @Query("SELECT EXISTS(SELECT 1 FROM pending_sync)")
+    suspend fun hasPendingSync(): Boolean
+
+    @Query("SELECT pokemonId FROM pending_sync WHERE completed = 0 ORDER BY pokemonId")
+    suspend fun pendingSyncIds(): List<Int>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun putPendingSync(items: List<PendingSyncEntity>)
+
+    @Query("UPDATE pending_sync SET completed = 1 WHERE pokemonId = :id")
+    suspend fun markSynced(id: Int)
+
+    @Query("DELETE FROM pending_sync")
+    suspend fun clearPendingSync()
+
     @Transaction
-    suspend fun completeSync(items: List<PokemonEntity>, completedAt: Long) {
-        putPokemon(items)
+    suspend fun beginSync(ids: List<Int>) {
+        invalidateSync()
+        putPendingSync(ids.map { PendingSyncEntity(it) })
+    }
+
+    @Transaction
+    suspend fun saveSyncedPokemon(item: PokemonEntity) {
+        putPokemon(item)
+        markSynced(item.id)
+    }
+
+    @Transaction
+    suspend fun finishSync(completedAt: Long) {
         putSyncMetadata(SyncMetadata(completedAt = completedAt))
+        clearPendingSync()
     }
 
     @Query("SELECT * FROM personal")

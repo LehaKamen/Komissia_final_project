@@ -57,6 +57,44 @@ class WorkerSchedulingTest {
     }
 
     @Test
+    fun permanentPartialFailureStopsWithoutRetrying() = runBlocking {
+        api.permanentDetailFailure = true
+        val request = OneTimeWorkRequestBuilder<SyncWorker>().build()
+        manager.enqueue(request).result.get(10, TimeUnit.SECONDS)
+        val info = withTimeout(20_000) {
+            manager.getWorkInfoByIdFlow(request.id).first { it?.state?.isFinished == true }
+        }
+        assertEquals(WorkInfo.State.FAILED, info?.state)
+        assertEquals(59, database.dao().pokemon().first().size)
+        assertEquals(listOf(25), database.dao().pendingSyncIds())
+        assertNull(database.dao().lastCompleteSync())
+    }
+
+    @Test
+    fun temporaryFailureStopsAtAttemptLimit() = runBlocking {
+        api.offline = true
+        val request = OneTimeWorkRequestBuilder<SyncWorker>().build()
+        manager.enqueue(request).result.get(10, TimeUnit.SECONDS)
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val driver = checkNotNull(WorkManagerTestInitHelper.getTestDriver(context))
+        for (attempt in 1 until SyncWorker.MAX_ATTEMPTS) {
+            withTimeout(20_000) {
+                manager.getWorkInfoByIdFlow(request.id).first {
+                    it?.state == WorkInfo.State.ENQUEUED && it.runAttemptCount == attempt
+                }
+            }
+            assertEquals(attempt, api.listCalls.get())
+            driver.setInitialDelayMet(request.id)
+        }
+        val info = withTimeout(20_000) {
+            manager.getWorkInfoByIdFlow(request.id).first { it?.state?.isFinished == true }
+        }
+        assertEquals(WorkInfo.State.FAILED, info?.state)
+        assertEquals(SyncWorker.MAX_ATTEMPTS, api.listCalls.get())
+        assertNull(database.dao().lastCompleteSync())
+    }
+
+    @Test
     fun workManagerCreatesWorkerThroughHiltAndWritesRealRoomData() = runBlocking {
         val request = OneTimeWorkRequestBuilder<SyncWorker>().build()
         manager.enqueue(request).result.get(10, TimeUnit.SECONDS)

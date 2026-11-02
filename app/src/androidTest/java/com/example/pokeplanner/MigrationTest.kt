@@ -9,6 +9,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.pokeplanner.data.local.AppDatabase
 import com.example.pokeplanner.data.local.MIGRATION_1_2
 import com.example.pokeplanner.data.local.MIGRATION_2_3
+import com.example.pokeplanner.data.local.MIGRATION_3_4
 import com.example.pokeplanner.model.PokemonStatus
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -21,6 +22,8 @@ class MigrationTest {
     @Test fun versionOnePreservesPersonalDataAndCreatesCollectionLinks() = verifyMigration(1)
 
     @Test fun versionTwoPreservesExistingCollectionsAndConvertsOldTeam() = verifyMigration(2)
+
+    @Test fun versionThreePreservesCacheAndAddsPendingSync() = verifyMigration(3)
 
     private fun verifyMigration(version: Int) = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -39,13 +42,17 @@ class MigrationTest {
                         db.execSQL(
                             "CREATE TABLE recent (pokemonId INTEGER NOT NULL PRIMARY KEY, viewedAt INTEGER NOT NULL)",
                         )
-                        if (version == 2) MIGRATION_1_2.migrate(db)
+                        if (version >= 2) MIGRATION_1_2.migrate(db)
                         db.execSQL("INSERT INTO pokemon VALUES (25, 'Pikachu', 'https://image', 'electric', 123)")
                         db.execSQL("INSERT INTO personal VALUES (25, 'TRAINING', 'Старая заметка', 'Моя команда')")
                         db.execSQL("INSERT INTO recent VALUES (25, 456)")
-                        if (version == 2) {
+                        if (version >= 2) {
                             db.execSQL("INSERT INTO collections VALUES (7, 'Существующая', 'Описание')")
                             db.execSQL("INSERT INTO collection_members VALUES (7, 25)")
+                        }
+                        if (version == 3) {
+                            MIGRATION_2_3.migrate(db)
+                            db.execSQL("INSERT INTO sync_metadata VALUES (1, 789)")
                         }
                     }
 
@@ -55,7 +62,7 @@ class MigrationTest {
         helper.writableDatabase
         helper.close()
         val database = Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
         try {
             val dao = database.dao()
             val personal = dao.personal().first().single()
@@ -65,8 +72,9 @@ class MigrationTest {
             assertEquals("Pikachu", dao.catalogIndex().first().single().name)
             val team = dao.collections().first().single { it.name == "Моя команда" }
             assertTrue(dao.members().first().any { it.collectionId == team.id && it.pokemonId == 25 })
-            if (version == 2) assertTrue(dao.members().first().any { it.collectionId == 7L })
-            assertNull(dao.lastCompleteSync())
+            if (version >= 2) assertTrue(dao.members().first().any { it.collectionId == 7L })
+            if (version == 3) assertEquals(789L, dao.lastCompleteSync()) else assertNull(dao.lastCompleteSync())
+            assertTrue(dao.pendingSyncIds().isEmpty())
             assertNull(dao.cachedPokemon(25)?.localImage)
         } finally {
             database.close()

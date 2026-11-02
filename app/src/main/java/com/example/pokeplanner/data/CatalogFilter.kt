@@ -14,8 +14,11 @@ object CatalogFilter {
         val plannedIds = personal.filter { it.status == PokemonStatus.PLANNED }
             .mapTo(mutableSetOf()) { it.pokemonId }
         val normalized = query.trim()
+        val number = normalized.removePrefix("#").takeIf { value ->
+            value.isNotEmpty() && value.all { it in '0'..'9' }
+        }?.toIntOrNull()
         return items.filter { item ->
-            (item.name.contains(normalized, ignoreCase = true) || item.id.toString() == normalized) &&
+            (item.name.contains(normalized, ignoreCase = true) || item.id == number) &&
                 (!onlyPlanned || item.id in plannedIds)
         }
     }

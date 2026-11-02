@@ -41,6 +41,7 @@ class FakeSettings : SettingsSource {
 class FakeApi : PokeApi {
     var offline = false
     var listCalls = 0
+    var listFailure: Exception? = null
     var activeCalls = 0
     var maximumConcurrent = 0
     val failedIds = mutableSetOf<Int>()
@@ -49,6 +50,7 @@ class FakeApi : PokeApi {
 
     override suspend fun list(limit: Int): ListDto {
         listCalls++
+        listFailure?.let { throw it }
         if (offline) throw IOException("offline")
         return ListDto((1..total).map { id -> Named(name(id), "https://pokeapi.co/api/v2/pokemon/$id/") })
     }
@@ -76,10 +78,12 @@ class FakeApi : PokeApi {
 class FakeImages : ImageStore {
     val saved = mutableSetOf<String>()
     val failedIds = mutableSetOf<Int>()
+    val permanentIds = mutableSetOf<Int>()
     var calls = 0
     var onSave: suspend (Int) -> Unit = { }
     override suspend fun save(id: Int, url: String?): String {
         calls++
+        if (id in permanentIds) throw com.example.pokeplanner.data.PermanentSyncException("HTTP 404")
         if (id in failedIds) throw IOException("image failed")
         onSave(id)
         return "/images/$id.png".also { saved += it }
@@ -96,6 +100,8 @@ class RepositoryFixture {
     val recent = MutableStateFlow<List<RecentEntity>>(emptyList())
     val collections = MutableStateFlow<List<CollectionEntity>>(emptyList())
     val members = MutableStateFlow<List<CollectionMemberEntity>>(emptyList())
+    val pending = mutableSetOf<Int>()
+    var batchActive = false
     var stamp: Long? = null
     var now = 10_000L
     val dao = mockk<PokeDao>(relaxed = true)
@@ -117,6 +123,24 @@ class RepositoryFixture {
         }
         coEvery { dao.cachedPokemon(any()) } answers { cards.value.find { it.id == firstArg<Int>() } }
         coEvery { dao.lastCompleteSync() } answers { stamp }
+        coEvery { dao.hasPendingSync() } answers { batchActive }
+        coEvery { dao.pendingSyncIds() } answers { pending.sorted() }
+        coEvery { dao.beginSync(any()) } answers {
+            stamp = null
+            batchActive = true
+            pending.addAll(firstArg<List<Int>>())
+        }
+        coEvery { dao.saveSyncedPokemon(any()) } answers {
+            val item = firstArg<PokemonEntity>()
+            putCards(listOf(item))
+            pending.remove(item.id)
+            Unit
+        }
+        coEvery { dao.finishSync(any()) } answers {
+            stamp = firstArg()
+            batchActive = false
+            pending.clear()
+        }
         coEvery { dao.putIndex(any()) } answers { index.value = firstArg() }
         coEvery { dao.putPokemon(any<List<PokemonEntity>>()) } answers { putCards(firstArg()) }
         coEvery { dao.putPokemon(any<PokemonEntity>()) } answers { putCards(listOf(firstArg())) }
@@ -128,10 +152,6 @@ class RepositoryFixture {
             val id = firstArg<Int>()
             val path = secondArg<String>()
             cards.value = cards.value.map { if (it.id == id) it.copy(localImage = path) else it }
-        }
-        coEvery { dao.completeSync(any(), any()) } answers {
-            putCards(firstArg())
-            stamp = secondArg()
         }
         coEvery { dao.invalidateSync() } answers { stamp = null }
         coEvery { dao.putRecent(any()) } answers {

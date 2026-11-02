@@ -44,6 +44,9 @@ class FileImageStore @Inject constructor(
             } else {
                 client.newCall(Request.Builder().url(url).build()).execute().use { response ->
                     if (!response.isSuccessful) {
+                        if (!isRetryableHttpStatus(response.code)) {
+                            throw PermanentSyncException("Изображение недоступно: HTTP ${response.code}")
+                        }
                         throw IOException(
                             "Не удалось сохранить изображение: HTTP ${response.code}",
                         )
@@ -54,7 +57,7 @@ class FileImageStore @Inject constructor(
             }
             val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(temporary.absolutePath, options)
-            if (options.outWidth <= 0) throw IOException("Сервер вернул некорректное изображение")
+            if (options.outWidth <= 0) throw PermanentSyncException("Сервер вернул некорректное изображение")
             if (!temporary.renameTo(destination)) {
                 throw IOException("Не удалось сохранить изображение на устройстве")
             }

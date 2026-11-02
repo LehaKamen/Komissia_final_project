@@ -5,6 +5,7 @@ import java.io.IOException
 
 fun userMessage(error: Exception): String = when (error) {
     is IncompleteSyncException -> error.message.orEmpty()
+    is PermanentSyncException -> error.message ?: "Данные недоступны на сервере"
     is HttpException -> if (error.code() ==
         404
     ) {
